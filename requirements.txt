@@ -1,0 +1,6 @@
+mysql-python
+mock
+web.py
+webtest
+unittest2
+pytest
