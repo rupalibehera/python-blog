@@ -1,0 +1,291 @@
+kind: "Template"
+apiVersion: "v1"
+metadata:
+  name: python-mysql-template
+
+parameters:
+  -
+    description: "The name assigned to all of the frontend objects defined in this template."
+    displayName: Name
+    name: NAME
+    required: true
+    value: python-blog
+  -
+    description: "The OpenShift Namespace where the ImageStream resides."
+    displayName: Namespace
+    name: NAMESPACE
+    required: true
+  -
+    description: "Maximum amount of memory the python container can use."
+    displayName: "Memory Limit"
+    name: MEMORY_LIMIT
+    required: true
+    value: 512Mi
+  -
+    description: "Maximum amount of memory the mysqldb container can use."
+    displayName: "Memory Limit (Mysql DB)"
+    name: MEMORY_MYSQLDB_LIMIT
+    required: true
+    value: 512Mi
+  -
+    description: "The URL of the repository with your application source code."
+    displayName: "Git Repository URL"
+    name: SOURCE_REPOSITORY_URL
+    required: true
+    value: "https://github.com/rupalibehera/python-blog.git"
+  -
+    description: "Set this to a branch name, tag or other ref of your repository if you are not using the default branch."
+    displayName: "Git Reference"
+    name: SOURCE_REPOSITORY_REF
+  -
+    description: "Set this to the relative path to your project if it is not in the root of your repository."
+    displayName: "Context Directory"
+    name: CONTEXT_DIR
+  -
+    description: "The exposed hostname that will route to the python web.py service, if left blank a value will be defaulted."
+    displayName: "Application Hostname"
+    name: APPLICATION_DOMAIN
+    value: ""
+  -
+    description: "A secret string used to configure the GitHub webhook."
+    displayName: "GitHub Webhook Secret"
+    from: "[a-zA-Z0-9]{40}"
+    generate: expression
+    name: GITHUB_WEBHOOK_SECRET
+  -
+    description: "A secret string used to configure the Generic webhook."
+    displayName: "Generic Webhook Secret"
+    from: "[a-zA-Z0-9]{40}"
+    generate: expression
+    name: GENERIC_WEBHOOK_SECRET
+  -
+    displayName: "Database Service Name"
+    name: DATABASE_SERVICE_NAME
+    required: true
+    value: mysqldb
+  -
+    name: MYSQL_USER
+    value: admin
+  -
+    name: MYSQL_PASSWORD
+    value: admin
+  -
+    displayName: "Database Name"
+    name: MYSQL_DATABASE
+    required: true
+    value: blog
+  -
+    name: MYSQL_ROOT_PASSWORD
+    value: admin
+
+objects:
+  -
+    kind: Service
+    apiVersion: v1
+    metadata:
+      annotations:
+        description: "Exposes and load balances the application pods"
+        service.alpha.openshift.io/dependencies: "[{\"name\": \"${DATABASE_SERVICE_NAME}\", \"kind\": \"Service\"}]"
+      name: "${NAME}"
+      labels:
+        app: "${NAME}"
+    spec:
+      ports:
+        -
+          name: web
+          port: 8080
+          targetPort: 8080
+      selector:
+        deploymentConfig: "${NAME}"
+  -
+    kind: Route
+    apiVersion: v1
+    metadata:
+      name: "${NAME}"
+      labels:
+        app: "${NAME}"
+    spec:
+      host: "${APPLICATION_DOMAIN}"
+      path: /
+      to:
+        kind: Service
+        name: "${NAME}"
+  -
+    kind: ImageStream
+    apiVersion: v1
+    metadata:
+      annotations:
+        description: "Keeps track of changes in the application image"
+      name: "${NAME}"
+  -
+    kind: BuildConfig
+    apiVersion: v1
+    metadata:
+      annotations:
+        description: "Defines how to build the application"
+      name: "${NAME}"
+    spec:
+      output:
+        to:
+          kind: ImageStreamTag
+          name: "${NAME}:latest"
+      source:
+        contextDir: "${CONTEXT_DIR}"
+        git:
+          ref: "${SOURCE_REPOSITORY_REF}"
+          uri: "${SOURCE_REPOSITORY_URL}"
+        type: Git
+      strategy:
+        sourceStrategy:
+          from:
+            kind: DockerImage
+            name: "openshift/python-27-centos7:latest"
+        type: Source
+      triggers:
+        -
+          type: ImageChange
+        -
+          type: ConfigChange
+        -
+          github:
+            secret: "${GITHUB_WEBHOOK_SECRET}"
+          type: GitHub
+        -
+          generic:
+            secret: "${GENERIC_WEBHOOK_SECRET}"
+          type: Generic
+  -
+    kind: DeploymentConfig
+    apiVersion: v1
+    metadata:
+      name: "${NAME}"
+      labels:
+        app: "${NAME}"
+      annotations:
+        description: "Defines how to deploy the application server"
+    spec:
+      replicas: 1
+      selector:
+        deploymentConfig: "${NAME}"
+      strategy:
+        type: Rolling
+      template:
+        metadata:
+          labels:
+            app: "${NAME}"
+            deploymentConfig: "${NAME}"
+          name: "${NAME}"
+        spec:
+          containers:
+            -
+              env:
+                -
+                  name: APP_FILE
+                  value: blog.py
+                -
+                  name: MYSQL_USER
+                  value: admin
+                -
+                  name: MYSQL_PASSWORD
+                  value: admin
+              name: python-blog
+              ports:
+                -
+                  containerPort: 8080
+              readinessProbe:
+                httpGet:
+                  path: /
+                  port: 8080
+                initialDelaySeconds: 3
+                timeoutSeconds: 3
+              resources:
+                limits:
+                  memory: "${MEMORY_LIMIT}"
+      triggers:
+        -
+          imageChangeParams:
+            automatic: true
+            containerNames:
+              - python-blog
+            from:
+              kind: ImageStreamTag
+              name: "${NAME}:latest"
+              namespace: "${NAMESPACE}"
+          type: ImageChange
+        -
+          type: ConfigChange
+  -
+    kind: Service
+    apiVersion: v1
+    metadata:
+      annotations:
+        description: "Exposes the database server"
+      name: "${DATABASE_SERVICE_NAME}"
+    spec:
+      ports:
+        -
+          name: mysqldb
+          port: 3306
+          targetPort: 3306
+      selector:
+        name: "${DATABASE_SERVICE_NAME}"
+  -
+    kind: DeploymentConfig
+    apiVersion: v1
+    metadata:
+      annotations:
+        description: "Defines how to deploy the database"
+      name: "${DATABASE_SERVICE_NAME}"
+    spec:
+      triggers:
+      - type: "ConfigChange"
+      replicas: 1
+      selector:
+        name: "${DATABASE_SERVICE_NAME}"
+      strategy:
+        type: Recreate
+      template:
+        metadata:
+          labels:
+            name: "${DATABASE_SERVICE_NAME}"
+          name: "${DATABASE_SERVICE_NAME}"
+        spec:
+          containers:
+            -
+              env:
+                -
+                  name: MYSQL_USER
+                  value: "${MYSQL_USER}"
+                -
+                  name: MYSQL_PASSWORD
+                  value: "${MYSQL_PASSWORD}"
+                -
+                  name: MYSQL_DATABASE
+                  value: "${MYSQL_DATABASE}"
+                -
+                  name: MYSQL_ROOT_PASSWORD
+                  value: "${MYSQL_ROOT_PASSWORD}"
+              image: "centos/mysql-57-centos7:latest"
+              livenessProbe:
+                initialDelaySeconds: 30
+                tcpSocket:
+                  port: 3306
+                timeoutSeconds: 1
+              name: mysqldb
+              ports:
+                -
+                  containerPort: 3306
+              resources:
+                limits:
+                  memory: "${MEMORY_MYSQLDB_LIMIT}"
+              volumeMounts:
+                -
+                  mountPath: /var/lib/mysql/
+                  name: "${DATABASE_SERVICE_NAME}-data"
+          volumes:
+            -
+              emptyDir:
+                medium: ""
+              name: "${DATABASE_SERVICE_NAME}-data"
+
+
